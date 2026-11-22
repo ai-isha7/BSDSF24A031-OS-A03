@@ -5,7 +5,7 @@
  * readline() replaces our old read_cmd(): it prints the prompt, lets the
  * user edit the line and returns a malloc'd string (NULL on Ctrl+D).
  * ------------------------------------------------------------------- */
-static const char* builtin_names[] = { "exit", "cd", "help", "jobs", "history", NULL };
+static const char* builtin_names[] = { "exit", "cd", "help", "jobs", "history", "set", "export", "unset", NULL };
 
 int is_builtin(const char* name) {
     for (int i = 0; builtin_names[i]; i++)
@@ -216,6 +216,29 @@ int handle_builtin(char** arglist) {
         return 1;
     }
 
+    if (strcmp(arglist[0], "set") == 0) {
+        var_print();
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "unset") == 0) {
+        for (int i = 1; arglist[i]; i++) { var_unset(arglist[i]); unsetenv(arglist[i]); }
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "export") == 0) {      // export NAME  /  export NAME=value
+        if (arglist[1] == NULL) { var_print(); return 1; }
+        for (int i = 1; arglist[i]; i++) {
+            char* name = strdup(arglist[i]);
+            char* eq = strchr(name, '=');
+            if (eq) { *eq = '\0'; var_set(name, eq + 1); }
+            const char* val = var_get(name);
+            if (val) setenv(name, val, 1);        // now visible to child processes
+            free(name);
+        }
+        return 1;
+    }
+
     if (strcmp(arglist[0], "jobs") == 0) {
         print_jobs();
         return 1;
@@ -337,9 +360,140 @@ int split_line(const char* line, stmtlist_t* out) {
     return 0;
 }
 
+/* ---------------------------------------------------------------------
+ * Shell variables: a singly linked list of (name, value) pairs.
+ * ------------------------------------------------------------------- */
+typedef struct var {
+    char* name;
+    char* value;
+    struct var* next;
+} var_t;
+
+static var_t* vars_head = NULL;
+
+void var_set(const char* name, const char* value) {
+    for (var_t* v = vars_head; v; v = v->next)
+        if (strcmp(v->name, name) == 0) {          // re-assignment: replace the value
+            free(v->value);
+            v->value = strdup(value);
+            return;
+        }
+    var_t* v = malloc(sizeof(var_t));
+    v->name = strdup(name);
+    v->value = strdup(value);
+    v->next = vars_head;
+    vars_head = v;
+}
+
+const char* var_get(const char* name) {
+    for (var_t* v = vars_head; v; v = v->next)
+        if (strcmp(v->name, name) == 0) return v->value;
+    return NULL;
+}
+
+void var_unset(const char* name) {
+    for (var_t** pp = &vars_head; *pp; pp = &(*pp)->next)
+        if (strcmp((*pp)->name, name) == 0) {
+            var_t* v = *pp;
+            *pp = v->next;
+            free(v->name); free(v->value); free(v);
+            return;
+        }
+}
+
+void var_print(void) {
+    for (var_t* v = vars_head; v; v = v->next)
+        printf("%s=%s\n", v->name, v->value);
+}
+
+/* Is t of the form NAME=value, with NAME = [A-Za-z_][A-Za-z0-9_]* ? */
+static int is_assignment(const char* t) {
+    if (!(isalpha((unsigned char) t[0]) || t[0] == '_')) return 0;
+    int i = 1;
+    while (isalnum((unsigned char) t[i]) || t[i] == '_') i++;
+    return t[i] == '=';
+}
+
+static int all_assignments(char** tokens) {
+    for (int i = 0; tokens[i]; i++)
+        if (!is_assignment(tokens[i])) return 0;
+    return tokens[0] != NULL;
+}
+
+/* Returns a NEW malloc'd string in which $NAME, ${NAME}, $? and $$ in t are
+ * replaced by their values (unknown names expand to ""). Lookup order:
+ * shell variables, then the environment. */
+static char* expand_token(const char* t) {
+    size_t cap = strlen(t) + 64, len = 0;
+    char* out = malloc(cap);
+
+    #define APPEND(str) do { const char* _s = (str); size_t _l = strlen(_s); \
+        while (len + _l + 1 > cap) { cap *= 2; out = realloc(out, cap); } \
+        memcpy(out + len, _s, _l); len += _l; } while (0)
+
+    for (const char* p = t; *p; ) {
+        if (*p != '$') { char c[2] = { *p++, '\0' }; APPEND(c); continue; }
+
+        p++;                                              // skip '$'
+        char name[256];
+        int n = 0;
+        if (*p == '?')      { char b[16]; snprintf(b, sizeof b, "%d", last_status); APPEND(b); p++; }
+        else if (*p == '$') { char b[16]; snprintf(b, sizeof b, "%d", (int) getpid()); APPEND(b); p++; }
+        else if (*p == '{') {
+            const char* close = strchr(p, '}');
+            if (!close || close - p - 1 >= (int) sizeof name) { APPEND("$"); continue; }
+            n = close - p - 1;
+            memcpy(name, p + 1, n); name[n] = '\0';
+            p = close + 1;
+            const char* v = var_get(name); if (!v) v = getenv(name);
+            if (v) APPEND(v);
+        } else if (isalpha((unsigned char) *p) || *p == '_') {
+            while ((isalnum((unsigned char) *p) || *p == '_') && n < (int) sizeof name - 1) name[n++] = *p++;
+            name[n] = '\0';
+            const char* v = var_get(name); if (!v) v = getenv(name);
+            if (v) APPEND(v);
+        } else {
+            APPEND("$");                                  // lone '$' stays literal
+        }
+    }
+    out[len] = '\0';
+    #undef APPEND
+    return out;
+}
+
+/* Replaces every token that contains '$' by its expansion. A token such as
+ * $UNSET that expands to nothing is dropped, like in bash. */
+static void expand_tokens(char** tokens) {
+    int w = 0;
+    for (int r = 0; tokens[r]; r++) {
+        if (strchr(tokens[r], '$') == NULL) { tokens[w++] = tokens[r]; continue; }
+        char* e = expand_token(tokens[r]);
+        int drop = (e[0] == '\0' && tokens[r][0] == '$');
+        free(tokens[r]);
+        if (drop) free(e);
+        else tokens[w++] = e;
+    }
+    tokens[w] = NULL;
+}
+
 int run_statement(const char* text, int background) {
     char** tokens = tokenize(text);
     if (tokens == NULL) return 0;
+
+    expand_tokens(tokens);                       // $VAR substitution (after tokenizing, before executing)
+    if (tokens[0] == NULL) {                     // e.g. "$EMPTY" expanded to nothing
+        free(tokens);
+        return last_status = 0;
+    }
+    if (all_assignments(tokens)) {               // NAME=value is handled by the shell itself: no fork()
+        for (int i = 0; tokens[i]; i++) {
+            char* eq = strchr(tokens[i], '=');
+            *eq = '\0';
+            var_set(tokens[i], eq + 1);
+        }
+        free_tokens(tokens);
+        return last_status = 0;
+    }
 
     int status = 2;
     pipeline_t pl;
