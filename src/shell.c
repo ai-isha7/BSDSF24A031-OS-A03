@@ -60,3 +60,46 @@ char** tokenize(char* cmdline) {
     arglist[argnum] = NULL;
     return arglist;
 }
+
+/* ---------------------------------------------------------------------
+ * Built-in commands.
+ * These MUST run inside the shell process itself (not in a forked child),
+ * because they change the shell's own state (cwd, lifetime, ...).
+ * Returns 1 if arglist[0] was a built-in (and was executed), 0 otherwise.
+ * ------------------------------------------------------------------- */
+int handle_builtin(char** arglist) {
+    if (arglist == NULL || arglist[0] == NULL)
+        return 0;
+
+    if (strcmp(arglist[0], "exit") == 0) {
+        printf("Exiting shell.\n");
+        exit(0);
+    }
+
+    if (strcmp(arglist[0], "cd") == 0) {
+        const char* dir = arglist[1];
+        if (dir == NULL || dir[0] == '\0')   // plain "cd" goes HOME, like bash
+            dir = getenv("HOME");
+        if (dir == NULL)
+            fprintf(stderr, "cd: HOME not set\n");
+        else if (chdir(dir) == -1)
+            fprintf(stderr, "cd: %s: %s\n", dir, strerror(errno));
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "help") == 0) {
+        printf("Built-in commands:\n");
+        printf("  exit        terminate the shell\n");
+        printf("  cd <dir>    change the current working directory\n");
+        printf("  help        show this help message\n");
+        printf("  jobs        list background jobs (not yet implemented)\n");
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "jobs") == 0) {
+        printf("Job control not yet implemented.\n");
+        return 1;
+    }
+
+    return 0;
+}

@@ -6,7 +6,9 @@ int main() {
 
     while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
         if ((arglist = tokenize(cmdline)) != NULL) {
-            execute(arglist);
+            // Built-ins run in the shell itself; everything else is fork-exec-wait.
+            if (!handle_builtin(arglist))
+                execute(arglist);
 
             // Free the memory allocated by tokenize()
             for (int i = 0; arglist[i] != NULL; i++) {
