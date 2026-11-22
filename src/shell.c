@@ -66,46 +66,105 @@ void init_readline(void) {
     rl_attempted_completion_function = shell_completion;
 }
 
-char** tokenize(char* cmdline) {
-    // Edge case: empty command line
-    if (cmdline == NULL || cmdline[0] == '\0' || cmdline[0] == '\n') {
-        return NULL;
-    }
+static int is_op_char(char c) { return c == '<' || c == '>' || c == '|'; }
 
-    char** arglist = (char**)malloc(sizeof(char*) * (MAXARGS + 1));
-    for (int i = 0; i < MAXARGS + 1; i++) {
-        arglist[i] = (char*)malloc(sizeof(char) * ARGLEN);
-        bzero(arglist[i], ARGLEN);
-    }
+/* Splits the line into tokens. Words are separated by blanks; text inside
+ * "..." or '...' is kept together (quotes removed). The operators  <  >  >>  |
+ * become tokens of their own even without surrounding spaces. */
+char** tokenize(const char* cmdline) {
+    size_t cap = 16, n = 0;
+    char** toks = malloc(cap * sizeof(char*));
+    const char* p = cmdline;
 
-    char* cp = cmdline;
-    char* start;
-    int len;
-    int argnum = 0;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
 
-    while (*cp != '\0' && argnum < MAXARGS) {
-        while (*cp == ' ' || *cp == '\t') cp++; // Skip leading whitespace
-        
-        if (*cp == '\0') break; // Line was only whitespace
+        char* buf = malloc(strlen(p) + 3);
+        size_t len = 0;
 
-        start = cp;
-        len = 1;
-        while (*++cp != '\0' && !(*cp == ' ' || *cp == '\t')) {
-            len++;
+        if (is_op_char(*p)) {
+            buf[len++] = *p++;
+            if (buf[0] == '>' && *p == '>') buf[len++] = *p++;     // ">>"
+        } else {
+            char quote = 0;
+            while (*p && (quote || !(*p == ' ' || *p == '\t' || is_op_char(*p)))) {
+                if (quote) {
+                    if (*p == quote) quote = 0; else buf[len++] = *p;
+                    p++;
+                } else if (*p == '"' || *p == '\'') {
+                    quote = *p++;
+                } else {
+                    buf[len++] = *p++;
+                }
+            }
+            if (quote) {
+                fprintf(stderr, "syntax error: unterminated quote\n");
+                free(buf);
+                toks[n] = NULL;
+                free_tokens(toks);
+                return NULL;
+            }
         }
-        strncpy(arglist[argnum], start, len);
-        arglist[argnum][len] = '\0';
-        argnum++;
+        buf[len] = '\0';
+
+        if (n + 2 > cap) { cap *= 2; toks = realloc(toks, cap * sizeof(char*)); }
+        toks[n++] = buf;
     }
 
-    if (argnum == 0) { // No arguments were parsed
-        for(int i = 0; i < MAXARGS + 1; i++) free(arglist[i]);
-        free(arglist);
-        return NULL;
-    }
+    if (n == 0) { free(toks); return NULL; }
+    toks[n] = NULL;
+    return toks;
+}
 
-    arglist[argnum] = NULL;
-    return arglist;
+void free_tokens(char** tokens) {
+    if (!tokens) return;
+    for (int i = 0; tokens[i]; i++) free(tokens[i]);
+    free(tokens);
+}
+
+static int is_operator(const char* t) {
+    return !strcmp(t, "<") || !strcmp(t, ">") || !strcmp(t, ">>") || !strcmp(t, "|");
+}
+
+/* Turns the flat token list into a pipeline of commands. */
+int parse_pipeline(char** tokens, pipeline_t* pl) {
+    int ntok = 0;
+    while (tokens[ntok]) ntok++;
+
+    memset(pl, 0, sizeof(*pl));
+    pl->ncmds = 1;
+    command_t* cur = &pl->cmds[0];
+    cur->argv = calloc(ntok + 1, sizeof(char*));
+    int argc = 0;
+
+    for (int i = 0; tokens[i]; i++) {
+        const char* t = tokens[i];
+        if (strcmp(t, "|") == 0) {
+            if (argc == 0 || pl->ncmds == MAX_CMDS) goto syntax_error;
+            cur = &pl->cmds[pl->ncmds++];
+            cur->argv = calloc(ntok + 1, sizeof(char*));
+            argc = 0;
+        } else if (!strcmp(t, "<") || !strcmp(t, ">") || !strcmp(t, ">>")) {
+            if (tokens[i + 1] == NULL || is_operator(tokens[i + 1])) goto syntax_error;
+            if (t[0] == '<') cur->infile = tokens[++i];
+            else { cur->append = (t[1] == '>'); cur->outfile = tokens[++i]; }
+        } else {
+            cur->argv[argc++] = tokens[i];
+        }
+    }
+    if (argc == 0) goto syntax_error;
+    return 0;
+
+syntax_error:
+    fprintf(stderr, "syntax error in command line\n");
+    free_pipeline(pl);
+    return -1;
+}
+
+void free_pipeline(pipeline_t* pl) {
+    for (int i = 0; i < pl->ncmds; i++) { free(pl->cmds[i].argv); pl->cmds[i].argv = NULL; }
+    pl->ncmds = 0;
 }
 
 /* ---------------------------------------------------------------------

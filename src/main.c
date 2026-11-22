@@ -3,7 +3,7 @@
 int main() {
     init_readline();
     char* cmdline;
-    char** arglist;
+    char** tokens;
 
     while ((cmdline = readline(PROMPT)) != NULL) {
         // !n must be expanded BEFORE tokenizing and before storing in history
@@ -20,16 +20,13 @@ int main() {
         for (char* p = cmdline; *p; p++)
             if (*p != ' ' && *p != '\t') { hist_add(cmdline); add_history(cmdline); break; }
 
-        if ((arglist = tokenize(cmdline)) != NULL) {
-            // Built-ins run in the shell itself; everything else is fork-exec-wait.
-            if (!handle_builtin(arglist))
-                execute(arglist);
-
-            // Free the memory allocated by tokenize()
-            for (int i = 0; arglist[i] != NULL; i++) {
-                free(arglist[i]);
+        if ((tokens = tokenize(cmdline)) != NULL) {
+            pipeline_t pl;
+            if (parse_pipeline(tokens, &pl) == 0) {
+                execute_pipeline(&pl);       // built-in, single command or pipeline
+                free_pipeline(&pl);
             }
-            free(arglist);
+            free_tokens(tokens);
         }
         free(cmdline);
     }
