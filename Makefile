@@ -1,7 +1,7 @@
 # Makefile for myshell
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -Iinclude
-LDFLAGS =
+LDFLAGS = -lreadline
 
 SRC    = $(wildcard src/*.c)
 OBJ    = $(patsubst src/%.c,obj/%.o,$(SRC))

@@ -1,10 +1,11 @@
 #include "shell.h"
 
 int main() {
+    init_readline();
     char* cmdline;
     char** arglist;
 
-    while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+    while ((cmdline = readline(PROMPT)) != NULL) {
         // !n must be expanded BEFORE tokenizing and before storing in history
         if (cmdline[0] == '!') {
             char* expanded = hist_expand(cmdline);
@@ -15,9 +16,9 @@ int main() {
             printf("%s\n", cmdline);           // show what is being re-run
         }
 
-        // store non-blank lines
+        // store non-blank lines (our own list for `history`/!n, and Readline's for the arrow keys)
         for (char* p = cmdline; *p; p++)
-            if (*p != ' ' && *p != '\t') { hist_add(cmdline); break; }
+            if (*p != ' ' && *p != '\t') { hist_add(cmdline); add_history(cmdline); break; }
 
         if ((arglist = tokenize(cmdline)) != NULL) {
             // Built-ins run in the shell itself; everything else is fork-exec-wait.
