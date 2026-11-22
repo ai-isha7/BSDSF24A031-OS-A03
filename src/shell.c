@@ -1,22 +1,69 @@
 #include "shell.h"
 
-char* read_cmd(char* prompt, FILE* fp) {
-    printf("%s", prompt);
-    char* cmdline = (char*) malloc(sizeof(char) * MAX_LEN);
-    int c, pos = 0;
+/* ---------------------------------------------------------------------
+ * GNU Readline: line editing, arrow-key history and TAB completion.
+ * readline() replaces our old read_cmd(): it prints the prompt, lets the
+ * user edit the line and returns a malloc'd string (NULL on Ctrl+D).
+ * ------------------------------------------------------------------- */
+static const char* builtin_names[] = { "exit", "cd", "help", "jobs", "history", NULL };
 
-    while ((c = getc(fp)) != EOF) {
-        if (c == '\n') break;
-        cmdline[pos++] = c;
-    }
+int is_builtin(const char* name) {
+    for (int i = 0; builtin_names[i]; i++)
+        if (strcmp(name, builtin_names[i]) == 0) return 1;
+    return 0;
+}
 
-    if (c == EOF && pos == 0) {
-        free(cmdline);
-        return NULL; // Handle Ctrl+D
+/* Generator called repeatedly by readline: yields one matching command
+ * per call (built-ins first, then every file found in the $PATH dirs). */
+static char* command_generator(const char* text, int state) {
+    static int bi;
+    static char* pathbuf;
+    static char* saveptr;
+    static DIR* dir;
+    static int started;
+    static size_t len;
+    struct dirent* de;
+
+    if (!state) {                       // first call for this completion
+        bi = 0; started = 0; len = strlen(text);
+        if (dir) { closedir(dir); dir = NULL; }
+        free(pathbuf);
+        const char* p = getenv("PATH");
+        pathbuf = strdup(p ? p : "");
     }
-    
-    cmdline[pos] = '\0';
-    return cmdline;
+    while (builtin_names[bi]) {
+        const char* n = builtin_names[bi++];
+        if (strncmp(n, text, len) == 0) return strdup(n);
+    }
+    for (;;) {
+        if (!dir) {
+            char* d = strtok_r(started ? NULL : pathbuf, ":", &saveptr);
+            started = 1;
+            if (!d) { free(pathbuf); pathbuf = NULL; return NULL; }
+            dir = opendir(d);
+            if (!dir) continue;
+        }
+        while ((de = readdir(dir)) != NULL)
+            if (de->d_name[0] != '.' && strncmp(de->d_name, text, len) == 0)
+                return strdup(de->d_name);
+        closedir(dir); dir = NULL;
+    }
+}
+
+/* Called by readline when TAB is pressed. If the word being completed is
+ * in command position (start of line, or after | ; &) complete commands.
+ * Returning NULL makes readline fall back to filename completion. */
+static char** shell_completion(const char* text, int start, int end) {
+    (void) end;
+    int i = start - 1;
+    while (i >= 0 && (rl_line_buffer[i] == ' ' || rl_line_buffer[i] == '\t')) i--;
+    if (i < 0 || rl_line_buffer[i] == '|' || rl_line_buffer[i] == ';' || rl_line_buffer[i] == '&')
+        return rl_completion_matches(text, command_generator);
+    return NULL;
+}
+
+void init_readline(void) {
+    rl_attempted_completion_function = shell_completion;
 }
 
 char** tokenize(char* cmdline) {
