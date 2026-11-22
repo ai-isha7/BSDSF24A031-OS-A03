@@ -18,5 +18,6 @@
 char* read_cmd(char* prompt, FILE* fp);
 char** tokenize(char* cmdline);
 int execute(char** arglist);
+int handle_builtin(char** arglist);   // returns 1 if arglist was a built-in, else 0
 
 #endif // SHELL_H
