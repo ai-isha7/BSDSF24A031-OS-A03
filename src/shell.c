@@ -206,6 +206,9 @@ int handle_builtin(char** arglist) {
         printf("  help        show this help message\n");
         printf("  jobs        list running background jobs\n");
         printf("  history     show the numbered list of previous commands\n");
+        printf("  set         print all shell variables\n");
+        printf("  export V    export variable V (or V=value) to child processes\n");
+        printf("  unset V     remove variable V\n");
         printf("  if/then/else/fi   conditional execution based on a command's exit status\n");
         printf("  !n          re-run command number n from history (!! = last)\n");
         return 1;
