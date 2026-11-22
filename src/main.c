@@ -26,9 +26,23 @@ int main() {
         // 1. split at ';' and '&'   2. run each piece in order
         stmtlist_t list;
         stmtlist_init(&list);
-        if (split_line(cmdline, &list) == 0)
-            for (int i = 0; i < list.count; i++)
-                run_statement(list.items[i].text, list.items[i].background);
+        int ok = (split_line(cmdline, &list) == 0);
+
+        // An unfinished "if" -> keep reading continuation lines until the matching "fi"
+        while (ok && if_depth(&list) > 0) {
+            char* more = readline("> ");
+            if (more == NULL) {
+                fprintf(stderr, "syntax error: unexpected end of input (missing 'fi')\n");
+                ok = 0;
+                break;
+            }
+            if (more[0] != '\0') { hist_add(more); add_history(more); }
+            ok = (split_line(more, &list) == 0);
+            free(more);
+        }
+
+        if (ok)
+            run_block(&list, 0, list.count);
         stmtlist_free(&list);
         free(cmdline);
     }

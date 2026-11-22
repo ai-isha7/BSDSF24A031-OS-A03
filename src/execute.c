@@ -26,12 +26,14 @@ static int run_builtin_redirected(command_t* c) {
     int saved_in = dup(STDIN_FILENO), saved_out = dup(STDOUT_FILENO);
     if (apply_redirections(c) == 0)
         handle_builtin(c->argv);
+    else
+        last_status = 1;
     fflush(stdout);
     dup2(saved_in, STDIN_FILENO);
     dup2(saved_out, STDOUT_FILENO);
     close(saved_in);
     close(saved_out);
-    return 0;
+    return last_status;
 }
 
 /* Runs cmd1 | cmd2 | ... | cmdN  (N may be 1).
@@ -74,7 +76,7 @@ int execute_pipeline(pipeline_t* pl, const char* cmdtext) {
             if (is_builtin(pl->cmds[i].argv[0])) {        // e.g.  history | grep ls
                 handle_builtin(pl->cmds[i].argv);
                 fflush(stdout);
-                exit(0);
+                exit(last_status);
             }
             execvp(pl->cmds[i].argv[0], pl->cmds[i].argv);
             fprintf(stderr, "%s: command not found\n", pl->cmds[i].argv[0]);
