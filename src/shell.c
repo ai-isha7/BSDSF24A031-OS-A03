@@ -173,9 +173,12 @@ void free_pipeline(pipeline_t* pl) {
  * because they change the shell's own state (cwd, lifetime, ...).
  * Returns 1 if arglist[0] was a built-in (and was executed), 0 otherwise.
  * ------------------------------------------------------------------- */
+int last_status = 0;
+
 int handle_builtin(char** arglist) {
     if (arglist == NULL || arglist[0] == NULL)
         return 0;
+    last_status = 0;                    // built-ins report success unless they say otherwise
 
     if (strcmp(arglist[0], "exit") == 0) {
         printf("Exiting shell.\n");
@@ -186,10 +189,13 @@ int handle_builtin(char** arglist) {
         const char* dir = arglist[1];
         if (dir == NULL || dir[0] == '\0')   // plain "cd" goes HOME, like bash
             dir = getenv("HOME");
-        if (dir == NULL)
+        if (dir == NULL) {
             fprintf(stderr, "cd: HOME not set\n");
-        else if (chdir(dir) == -1)
+            last_status = 1;
+        } else if (chdir(dir) == -1) {
             fprintf(stderr, "cd: %s: %s\n", dir, strerror(errno));
+            last_status = 1;
+        }
         return 1;
     }
 
@@ -200,6 +206,7 @@ int handle_builtin(char** arglist) {
         printf("  help        show this help message\n");
         printf("  jobs        list running background jobs\n");
         printf("  history     show the numbered list of previous commands\n");
+        printf("  if/then/else/fi   conditional execution based on a command's exit status\n");
         printf("  !n          re-run command number n from history (!! = last)\n");
         return 1;
     }
@@ -289,7 +296,24 @@ static void flush_segment(stmtlist_t* out, const char* start, size_t len, int bg
     while (len && isspace((unsigned char) start[len - 1])) len--;
     if (len == 0) return;
     char* tmp = strndup(start, len);
-    stmtlist_add(out, tmp, bg);
+
+    // Peel off leading keywords so "then echo hi" becomes the statements: then | echo hi
+    static const char* kw[] = { "if", "then", "else", "fi", NULL };
+    char* t = tmp;
+    for (int found = 1; found; ) {
+        found = 0;
+        while (isspace((unsigned char) *t)) t++;
+        for (int k = 0; kw[k]; k++) {
+            size_t kl = strlen(kw[k]);
+            if (strncmp(t, kw[k], kl) == 0 && (t[kl] == '\0' || isspace((unsigned char) t[kl]))) {
+                stmtlist_add(out, kw[k], 0);
+                t += kl;
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (*t) stmtlist_add(out, t, bg);
     free(tmp);
 }
 
@@ -325,7 +349,68 @@ int run_statement(const char* text, int background) {
         free_pipeline(&pl);
     }
     free_tokens(tokens);
+    last_status = status;
     return status;
+}
+
+/* ---------------------------------------------------------------------
+ * if / then / else / fi
+ * A multi-line block has been flattened into a list of statements where
+ * the keywords are statements of their own:
+ *        if | grep root /etc/passwd | then | echo yes | else | echo no | fi
+ * run_block() walks such a list; for an "if" it finds the matching
+ * then / else / fi (counting nesting depth), runs the condition, and picks
+ * the branch according to the condition's exit status (0 = success).
+ * ------------------------------------------------------------------- */
+static int is_kw(const stmtlist_t* l, int i, const char* kw) {
+    return strcmp(l->items[i].text, kw) == 0;
+}
+
+int if_depth(const stmtlist_t* l) {
+    int d = 0;
+    for (int i = 0; i < l->count; i++) {
+        if (is_kw(l, i, "if")) d++;
+        else if (is_kw(l, i, "fi")) d--;
+    }
+    return d;
+}
+
+int run_block(const stmtlist_t* l, int lo, int hi) {
+    int i = lo;
+    while (i < hi) {
+        const char* t = l->items[i].text;
+
+        if (strcmp(t, "if") == 0) {
+            int depth = 0, then_i = -1, else_i = -1, fi_i = -1;
+            for (int j = i; j < hi; j++) {
+                if (is_kw(l, j, "if")) depth++;
+                else if (is_kw(l, j, "fi")) { if (--depth == 0) { fi_i = j; break; } }
+                else if (depth == 1 && is_kw(l, j, "then") && then_i < 0) then_i = j;
+                else if (depth == 1 && is_kw(l, j, "else") && else_i < 0 && then_i >= 0) else_i = j;
+            }
+            if (fi_i < 0 || then_i < 0 || then_i == i + 1) {
+                fprintf(stderr, "syntax error: malformed if statement\n");
+                return last_status = 2;
+            }
+
+            run_block(l, i + 1, then_i);                    // the condition
+            int ok = (last_status == 0);
+            if (ok)
+                run_block(l, then_i + 1, else_i >= 0 ? else_i : fi_i);
+            else if (else_i >= 0)
+                run_block(l, else_i + 1, fi_i);
+            else
+                last_status = 0;                            // false condition, no else: status 0
+            i = fi_i + 1;
+        } else if (!strcmp(t, "then") || !strcmp(t, "else") || !strcmp(t, "fi")) {
+            fprintf(stderr, "syntax error near unexpected token '%s'\n", t);
+            return last_status = 2;
+        } else {
+            run_statement(t, l->items[i].background);
+            i++;
+        }
+    }
+    return last_status;
 }
 
 /* ---------------------------------------------------------------------

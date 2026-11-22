@@ -56,6 +56,11 @@ void stmtlist_free(stmtlist_t* l);
 int  split_line(const char* line, stmtlist_t* out);   // quote-aware split on ';' and '&'; -1 on error
 int  run_statement(const char* text, int background); // tokenize + parse + execute one statement
 
+// if / then / else / fi
+extern int last_status;                       // exit status of the most recently run command
+int if_depth(const stmtlist_t* l);            // number of 'if' still waiting for their 'fi'
+int run_block(const stmtlist_t* l, int lo, int hi);   // run statements lo..hi-1 (handles if-blocks)
+
 // Background jobs
 void job_add(pid_t pid, const char* cmd);
 void reap_jobs(void);      // waitpid(-1, WNOHANG) loop: collects finished children (no zombies)
