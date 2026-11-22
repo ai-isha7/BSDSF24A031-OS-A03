@@ -5,6 +5,20 @@ int main() {
     char** arglist;
 
     while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+        // !n must be expanded BEFORE tokenizing and before storing in history
+        if (cmdline[0] == '!') {
+            char* expanded = hist_expand(cmdline);
+            free(cmdline);
+            if (expanded == NULL)
+                continue;
+            cmdline = expanded;
+            printf("%s\n", cmdline);           // show what is being re-run
+        }
+
+        // store non-blank lines
+        for (char* p = cmdline; *p; p++)
+            if (*p != ' ' && *p != '\t') { hist_add(cmdline); break; }
+
         if ((arglist = tokenize(cmdline)) != NULL) {
             // Built-ins run in the shell itself; everything else is fork-exec-wait.
             if (!handle_builtin(arglist))
