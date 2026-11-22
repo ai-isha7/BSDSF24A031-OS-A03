@@ -61,6 +61,12 @@ extern int last_status;                       // exit status of the most recentl
 int if_depth(const stmtlist_t* l);            // number of 'if' still waiting for their 'fi'
 int run_block(const stmtlist_t* l, int lo, int hi);   // run statements lo..hi-1 (handles if-blocks)
 
+// Shell variables (NAME=value, $NAME)
+void        var_set(const char* name, const char* value);
+const char* var_get(const char* name);
+void        var_unset(const char* name);
+void        var_print(void);
+
 // Background jobs
 void job_add(pid_t pid, const char* cmd);
 void reap_jobs(void);      // waitpid(-1, WNOHANG) loop: collects finished children (no zombies)
