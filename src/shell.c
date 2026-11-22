@@ -93,6 +93,13 @@ int handle_builtin(char** arglist) {
         printf("  cd <dir>    change the current working directory\n");
         printf("  help        show this help message\n");
         printf("  jobs        list background jobs (not yet implemented)\n");
+        printf("  history     show the numbered list of previous commands\n");
+        printf("  !n          re-run command number n from history (!! = last)\n");
+        return 1;
+    }
+
+    if (strcmp(arglist[0], "history") == 0) {
+        hist_print();
         return 1;
     }
 
@@ -102,4 +109,49 @@ int handle_builtin(char** arglist) {
     }
 
     return 0;
+}
+
+
+/* ---------------------------------------------------------------------
+ * Command history: a simple array of strings.
+ * When full, the oldest entry is dropped and the rest shift down, so the
+ * numbers shown by `history` always run from 1 to hist_count.
+ * ------------------------------------------------------------------- */
+static char* history[HISTORY_SIZE];
+static int   hist_count = 0;
+
+void hist_add(const char* cmdline) {
+    if (hist_count == HISTORY_SIZE) {          // full: overwrite the oldest
+        free(history[0]);
+        memmove(&history[0], &history[1], sizeof(char*) * (HISTORY_SIZE - 1));
+        hist_count--;
+    }
+    history[hist_count++] = strdup(cmdline);
+}
+
+void hist_print(void) {
+    for (int i = 0; i < hist_count; i++)
+        printf("%4d  %s\n", i + 1, history[i]);
+}
+
+/* cmdline starts with '!'. Returns a malloc'd replacement command line,
+ * or NULL (after printing an error) if the event does not exist. */
+char* hist_expand(const char* cmdline) {
+    int n;
+    if (cmdline[1] == '!' && cmdline[2] == '\0')
+        n = hist_count;                         // !!  -> last command
+    else {
+        char* end;
+        long v = strtol(cmdline + 1, &end, 10);
+        if (end == cmdline + 1 || *end != '\0') {
+            fprintf(stderr, "%s: event not found\n", cmdline);
+            return NULL;
+        }
+        n = (int) v;
+    }
+    if (n < 1 || n > hist_count) {
+        fprintf(stderr, "%s: event not found (history has %d entries)\n", cmdline, hist_count);
+        return NULL;
+    }
+    return strdup(history[n - 1]);
 }
