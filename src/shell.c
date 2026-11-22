@@ -198,7 +198,7 @@ int handle_builtin(char** arglist) {
         printf("  exit        terminate the shell\n");
         printf("  cd <dir>    change the current working directory\n");
         printf("  help        show this help message\n");
-        printf("  jobs        list background jobs (not yet implemented)\n");
+        printf("  jobs        list running background jobs\n");
         printf("  history     show the numbered list of previous commands\n");
         printf("  !n          re-run command number n from history (!! = last)\n");
         return 1;
@@ -210,7 +210,7 @@ int handle_builtin(char** arglist) {
     }
 
     if (strcmp(arglist[0], "jobs") == 0) {
-        printf("Job control not yet implemented.\n");
+        print_jobs();
         return 1;
     }
 
@@ -260,4 +260,121 @@ char* hist_expand(const char* cmdline) {
         return NULL;
     }
     return strdup(history[n - 1]);
+}
+
+
+/* ---------------------------------------------------------------------
+ * Statement list + splitting at ';' and '&'
+ * ------------------------------------------------------------------- */
+void stmtlist_init(stmtlist_t* l) { l->items = NULL; l->count = l->cap = 0; }
+
+void stmtlist_add(stmtlist_t* l, const char* text, int background) {
+    if (l->count == l->cap) {
+        l->cap = l->cap ? l->cap * 2 : 8;
+        l->items = realloc(l->items, l->cap * sizeof(stmt_t));
+    }
+    l->items[l->count].text = strdup(text);
+    l->items[l->count].background = background;
+    l->count++;
+}
+
+void stmtlist_free(stmtlist_t* l) {
+    for (int i = 0; i < l->count; i++) free(l->items[i].text);
+    free(l->items);
+    stmtlist_init(l);
+}
+
+static void flush_segment(stmtlist_t* out, const char* start, size_t len, int bg) {
+    while (len && isspace((unsigned char) *start)) { start++; len--; }
+    while (len && isspace((unsigned char) start[len - 1])) len--;
+    if (len == 0) return;
+    char* tmp = strndup(start, len);
+    stmtlist_add(out, tmp, bg);
+    free(tmp);
+}
+
+/* "a ; b & c"  ->  [a, fg] [b, bg] [c, fg]   (separators inside quotes are ignored) */
+int split_line(const char* line, stmtlist_t* out) {
+    const char* seg = line;
+    char quote = 0;
+    for (const char* p = line; *p; p++) {
+        if (quote) { if (*p == quote) quote = 0; continue; }
+        if (*p == '"' || *p == '\'') { quote = *p; continue; }
+        if (*p == ';') {
+            flush_segment(out, seg, p - seg, 0);
+            seg = p + 1;
+        } else if (*p == '&') {
+            if (p[1] == '&') { fprintf(stderr, "'&&' is not supported\n"); return -1; }
+            flush_segment(out, seg, p - seg, 1);
+            seg = p + 1;
+        }
+    }
+    flush_segment(out, seg, strlen(seg), 0);
+    return 0;
+}
+
+int run_statement(const char* text, int background) {
+    char** tokens = tokenize(text);
+    if (tokens == NULL) return 0;
+
+    int status = 2;
+    pipeline_t pl;
+    if (parse_pipeline(tokens, &pl) == 0) {
+        pl.background = background;
+        status = execute_pipeline(&pl, text);
+        free_pipeline(&pl);
+    }
+    free_tokens(tokens);
+    return status;
+}
+
+/* ---------------------------------------------------------------------
+ * Background jobs: a linked list of (job id, pid, command text).
+ * ------------------------------------------------------------------- */
+typedef struct job {
+    int id;
+    pid_t pid;
+    char* cmd;
+    struct job* next;
+} job_t;
+
+static job_t* jobs_head = NULL;
+static int next_job_id = 1;
+
+void job_add(pid_t pid, const char* cmd) {
+    job_t* j = malloc(sizeof(job_t));
+    j->id = next_job_id++;
+    j->pid = pid;
+    j->cmd = strdup(cmd);
+    j->next = NULL;
+    job_t** pp = &jobs_head;                 // append at the tail
+    while (*pp) pp = &(*pp)->next;
+    *pp = j;
+    printf("[%d] %d\n", j->id, (int) pid);
+}
+
+/* Called before every prompt. waitpid(-1, WNOHANG) returns immediately: it
+ * collects (reaps) any finished child, so no zombies stay in the process table. */
+void reap_jobs(void) {
+    int status;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        for (job_t** pp = &jobs_head; *pp; pp = &(*pp)->next) {
+            if ((*pp)->pid == pid) {
+                job_t* j = *pp;
+                printf("[%d]+  Done    %s\n", j->id, j->cmd);
+                *pp = j->next;
+                free(j->cmd);
+                free(j);
+                break;
+            }
+        }
+    }
+    if (jobs_head == NULL) next_job_id = 1;
+}
+
+void print_jobs(void) {
+    if (jobs_head == NULL) { printf("No background jobs.\n"); return; }
+    for (job_t* j = jobs_head; j; j = j->next)
+        printf("[%d]  Running  pid=%d  %s &\n", j->id, (int) j->pid, j->cmd);
 }

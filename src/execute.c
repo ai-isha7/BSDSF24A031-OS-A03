@@ -38,10 +38,10 @@ static int run_builtin_redirected(command_t* c) {
  * N-1 pipes are created in the parent, then one child is forked per command.
  * Every process closes every pipe end it does not use, otherwise a reader
  * would never see EOF and the pipeline would hang. */
-int execute_pipeline(pipeline_t* pl) {
+int execute_pipeline(pipeline_t* pl, const char* cmdtext) {
     int n = pl->ncmds;
 
-    if (n == 1 && is_builtin(pl->cmds[0].argv[0]))
+    if (n == 1 && !pl->background && is_builtin(pl->cmds[0].argv[0]))
         return run_builtin_redirected(&pl->cmds[0]);
 
     int pipes[MAX_CMDS][2];
@@ -60,6 +60,11 @@ int execute_pipeline(pipeline_t* pl) {
         if (pid == -1) { perror("fork failed"); exit(1); }
 
         if (pid == 0) {                                   // ---- child ----
+            if (pl->background && i == 0 && pl->cmds[0].infile == NULL) {
+                int devnull = open("/dev/null", O_RDONLY);   // background job must not read the terminal
+                dup2(devnull, STDIN_FILENO);
+                close(devnull);
+            }
             if (i > 0)     dup2(pipes[i - 1][0], STDIN_FILENO);   // read end of previous pipe
             if (i < n - 1) dup2(pipes[i][1],     STDOUT_FILENO);  // write end of next pipe
             for (int j = 0; j < n - 1; j++) { close(pipes[j][0]); close(pipes[j][1]); }
@@ -79,6 +84,11 @@ int execute_pipeline(pipeline_t* pl) {
     }
 
     for (int j = 0; j < n - 1; j++) { close(pipes[j][0]); close(pipes[j][1]); }
+
+    if (pl->background) {                 // do NOT wait: remember the job and return to the prompt
+        job_add(pids[n - 1], cmdtext);
+        return 0;
+    }
 
     int status = 0;
     for (int i = 0; i < n; i++) {
